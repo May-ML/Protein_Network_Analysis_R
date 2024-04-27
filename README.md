@@ -1,0 +1,194 @@
+## Name: Meiheng Liang
+## Programming Language: R v4.3.1
+## Date: Apr 11, 2024
+## Description:
+
+This script is designed to perform network analysis based on provided protein list of human and those interactions. Clustering coefficients of each node and overall network were computed using R Package. The shortest paths between connected nodes were calculated where the significance levels of interactions were validated via Wilcox test.
+
+### Required files: 
+
+Human-PPI.txt
+protein-list1.txt
+protein-list2.txt
+
+### Required packages:
+
+tidyverse v2.0.0
+igraph v2.0.3
+ 
+### Execution:
+[step by step information to run the script]
+
+```{r setup, include=FALSE}
+setwd("C:/path/to/your/file/")
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+install.packages("igraph")
+install.packages("tidyverse")
+library(tidyverse)
+library(igraph)
+```
+
+
+```{r prep data}
+# Reading a comma-separated .txt file
+pl1 <- read.csv("C:/path/to/your/file/protein-list1.txt", header = FALSE, sep = "\t", fill = TRUE, strip.white = TRUE)
+pl2 <- read.csv("C:/path/to/your/file/protein-list2.txt", header = FALSE, sep = "\t", fill = TRUE, strip.white = TRUE)
+hppi <- read.csv("C:/path/to/your/file/Human-PPI.txt", header = FALSE, sep = "\t", fill = TRUE, strip.white = TRUE, row.names = NULL)
+hppi<- hppi[-1, ] #remove header
+
+```
+
+
+```{r degree calculation}
+# Create edges between every protein pairs in PPI
+colnames(hppi) <- c("from", "to")
+hppi<-na.omit(hppi) # remove NAs for equal matrcies
+
+# Remove self-interactions where 'from' and 'to' are the same
+hppi_filtered <- hppi[hppi$from != hppi$to, ]
+# Load your graph data
+graph <- graph_from_data_frame(hppi_filtered, directed = FALSE)
+
+# Open a PNG device
+png("Human_PPI_Analysis.png", width=800, height=600)
+
+# Set margins to zero on all sides
+par(mar=c(0,0,0,0))
+
+# Plot the graph
+plot(graph, vertex.size=5, vertex.label.cex=.5, edge.arrow.size=.1, layout=layout_nicely(graph))
+
+# Close the PNG device
+dev.off()
+
+plot(graph, vertex.size=5, vertex.label.cex=.5, edge.arrow.size=.1, layout=layout_nicely(graph))
+
+# Basic properties
+num_vertices <- vcount(graph)
+num_vertices
+num_edges <- ecount(graph)
+num_edges
+
+```
+
+
+```{r clustering coefficient}
+# Calculate clustering coefficient for each node by setting "local"
+local_cc <- transitivity(graph, type="local") 
+print(local_cc) 
+
+# Calculate network clustering coefficient  by setting "average"
+average_cc <- transitivity(graph, type="average")
+print(average_cc)
+
+```
+
+
+```{r validate scale free structure}
+#1. Calculate degree distribution
+####calculating the degree distribution and preparing the data for linear regression on a log-log scale.
+# Calculate the degree distribution
+degree_dist <- degree.distribution(graph, cumulative = FALSE)
+degrees <- seq_along(degree_dist) - 1
+log_degrees <- log10(degrees[degree_dist > 0])
+log_degree_dist <- log10(degree_dist[degree_dist > 0])
+
+data <- data.frame(log_degrees, log_degree_dist)
+data_cleaned <- data[!is.na(data$log_degrees) & !is.nan(data$log_degrees) & !is.infinite(data$log_degrees), ]
+
+#2.Perform linear regression on the log-log transformed degree distribution data.
+####Perform linear regression
+fit <- lm(log_degree_dist ~ log_degrees, data = data_cleaned)
+summary(fit)
+
+#Step3: Evaluate the Fitness
+####Extracting the R-squared value
+r_squared <- summary(fit)$r.squared
+
+plot(data_cleaned$log_degrees, data_cleaned$log_degree_dist, main = "Log-log plot of Degree Distribution",
+     xlab = "Log(Degree)", ylab = "Log(Probability)", pch = 19)
+abline(fit, col = "red", lty = 2)
+
+cat("The R-squared value of the linear fit is:", r_squared, "\n")
+if (r_squared > 0.8) {
+  cat("The degree distribution follows a power-law. The network is likely scale-free.\n")
+} else {
+  cat("The degree distribution does not follow a strict power-law. The network is likely not scale-free.\n")
+}
+```
+
+
+```{r finding the shortest path of pl1 and pl2 using interactions in hppi}
+# Filter interactions between List A and List B
+# Example interaction data
+interactions <- hppi
+
+# Find all edges between proteins in pl1 and pl2
+edges_between_lists <- E(graph)[(.inc(V(graph)[name %in% pl1]) & .inc(V(graph)[name %in% pl2]))]
+#print(edges_between_lists)
+
+# Initialize a list to store paths
+paths_list_pl1_to_pl2 <- list()
+paths_list_pl2_to_pl1<-list()
+protein1<-unlist(pl1)
+protein2<-unlist(pl2)
+# Loop through each protein in pl1
+for (protein in protein1){
+ if (any(protein %in% V(graph)$name)) {  # Check if the source is in the graph
+        # Calculate shortest paths from source to all proteins in pl2 that are also in the graph
+        paths <- shortest_paths(graph, protein, protein2[protein2 %in% V(graph)$name], mode = "out")
+        paths_list_pl1_to_pl2[[protein]] <- paths
+    } 
+}
+paths_list_pl1_to_pl2
+# Loop through each protein in pl2
+for (protein in protein2) {
+    if (any(protein %in% V(graph)$name)) {  # Check if the source is in the graph
+        # Calculate shortest paths from source to all proteins in pl1 that are also in the graph
+        paths <- shortest_paths(graph, protein, protein1[protein1 %in% V(graph)$name], mode = "out")
+        paths_list_pl2_to_pl1[[protein]] <- paths
+    }
+}
+paths_list_pl2_to_pl1
+
+# Initialize a dataframe to store from, to, and path length
+shortest <- data.frame(from = character(), to = character(), path_length = integer(), stringsAsFactors = FALSE)
+
+# Calculate shortest path lengths from each protein in pl1 to each in pl2
+for (protein in protein1) {
+    if (any(protein %in% V(graph)$name)) {
+        for (target in protein2) {
+            if (any(target %in% V(graph)$name) ){
+                path_info <- shortest_paths(graph, from = protein, to = target, output = "vpath")
+                # Store the data
+                if (length(path_info$vpath[[1]]) > 0) {  # Ensure the path exists
+                    path_length <- length(path_info$vpath[[1]]) - 1  # Subtract 1 to count edges only
+                    shortest <- rbind(shortest, data.frame(from = protein, to = target, path_length = path_length))
+                } else {
+                    shortest <- rbind(shortest, data.frame(from = protein, to = target, path_length = NA))  # No path exists
+                }
+            }
+        }
+    }
+}
+shortest
+
+```
+
+```{r wilcox test}
+# Filter out NA values (where no path exists)
+filtered_paths <- shortest[!is.na(shortest$path_length), ]
+
+# Extract path lengths for the paths from pl1 to pl2
+pl1_to_pl2_lengths <- filtered_paths$path_length[filtered_paths$from %in% protein1 & filtered_paths$to %in% protein2]
+
+pl2_to_pl1_lengths <- filtered_paths$path_length[filtered_paths$from %in% protein2 & filtered_paths$to %in% protein1]
+    
+# Perform the Wilcoxon rank-sum test
+test_result <- wilcox.test(pl1_to_pl2_lengths, pl2_to_pl1_lengths, alternative = "two.sided")
+print(test_result)
+
+```
+### output file: 
+Human_PPI_Analysis.png
+528Assignment5.htm
